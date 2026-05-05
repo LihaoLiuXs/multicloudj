@@ -1,0 +1,244 @@
+package com.salesforce.multicloudj.registry.driver;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
+
+import com.salesforce.multicloudj.common.exceptions.InvalidArgumentException;
+import com.salesforce.multicloudj.common.exceptions.UnAuthorizedException;
+import com.salesforce.multicloudj.common.exceptions.UnSupportedOperationException;
+import com.salesforce.multicloudj.common.exceptions.UnknownException;
+import java.io.IOException;
+import org.apache.http.HttpHeaders;
+import org.apache.http.HttpStatus;
+import org.apache.http.StatusLine;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.message.BasicHeader;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+/** Unit tests for AuthChallenge and AuthScheme. */
+@ExtendWith(MockitoExtension.class)
+public class AuthChallengeTest {
+
+  private static final String REGISTRY_ENDPOINT = "https://test-registry.example.com";
+  private static final String TOKEN_ENDPOINT = "https://auth.example.com/token";
+  private static final String SERVICE = "registry.example.com";
+
+  @Mock private CloseableHttpClient mockHttpClient;
+
+  @Mock private CloseableHttpResponse mockResponse;
+
+  @Mock private StatusLine mockStatusLine;
+
+  @Test
+  void testAuthSchemeFromString_Anonymous() {
+    assertEquals(AuthScheme.ANONYMOUS, AuthScheme.fromString("anonymous"));
+    assertEquals(AuthScheme.ANONYMOUS, AuthScheme.fromString("ANONYMOUS"));
+    assertEquals(AuthScheme.ANONYMOUS, AuthScheme.fromString("Anonymous"));
+  }
+
+  @Test
+  void testAuthSchemeFromString_Basic() {
+    assertEquals(AuthScheme.BASIC, AuthScheme.fromString("basic"));
+    assertEquals(AuthScheme.BASIC, AuthScheme.fromString("BASIC"));
+    assertEquals(AuthScheme.BASIC, AuthScheme.fromString("Basic"));
+  }
+
+  @Test
+  void testAuthSchemeFromString_Bearer() {
+    assertEquals(AuthScheme.BEARER, AuthScheme.fromString("bearer"));
+    assertEquals(AuthScheme.BEARER, AuthScheme.fromString("BEARER"));
+    assertEquals(AuthScheme.BEARER, AuthScheme.fromString("Bearer"));
+  }
+
+  @Test
+  void testAuthSchemeFromString_NullThrowsInvalidArgumentException() {
+    assertThrows(InvalidArgumentException.class, () -> AuthScheme.fromString(null));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", "   ", "\t"})
+  void testAuthSchemeFromString_BlankThrowsInvalidArgumentException(String blank) {
+    assertThrows(InvalidArgumentException.class, () -> AuthScheme.fromString(blank));
+  }
+
+  @Test
+  void testAuthSchemeFromString_UnsupportedThrowsUnSupportedOperationException() {
+    assertThrows(UnSupportedOperationException.class, () -> AuthScheme.fromString("digest"));
+    assertThrows(UnSupportedOperationException.class, () -> AuthScheme.fromString("ntlm"));
+    assertThrows(UnSupportedOperationException.class, () -> AuthScheme.fromString("unknown"));
+  }
+
+  @Test
+  void testDiscover_ReturnsAnonymous_WhenStatusOk() throws Exception {
+    when(mockHttpClient.execute(any(HttpGet.class))).thenReturn(mockResponse);
+    when(mockResponse.getStatusLine()).thenReturn(mockStatusLine);
+    when(mockStatusLine.getStatusCode()).thenReturn(HttpStatus.SC_OK);
+
+    AuthChallenge challenge = AuthChallenge.discover(mockHttpClient, REGISTRY_ENDPOINT);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.ANONYMOUS, challenge.getScheme());
+  }
+
+  @Test
+  void testDiscover_ParsesWwwAuthenticate_WhenUnauthorized() throws Exception {
+    String wwwAuthHeader = "Bearer realm=\"" + TOKEN_ENDPOINT + "\",service=\"" + SERVICE + "\"";
+
+    when(mockHttpClient.execute(any(HttpGet.class))).thenReturn(mockResponse);
+    when(mockResponse.getStatusLine()).thenReturn(mockStatusLine);
+    when(mockStatusLine.getStatusCode()).thenReturn(HttpStatus.SC_UNAUTHORIZED);
+    when(mockResponse.containsHeader(HttpHeaders.WWW_AUTHENTICATE)).thenReturn(true);
+    when(mockResponse.getFirstHeader(HttpHeaders.WWW_AUTHENTICATE))
+        .thenReturn(new BasicHeader(HttpHeaders.WWW_AUTHENTICATE, wwwAuthHeader));
+
+    AuthChallenge challenge = AuthChallenge.discover(mockHttpClient, REGISTRY_ENDPOINT);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.BEARER, challenge.getScheme());
+    assertEquals(TOKEN_ENDPOINT, challenge.getRealm());
+    assertEquals(SERVICE, challenge.getService());
+  }
+
+  @Test
+  void testDiscover_ThrowsException_WhenUnauthorizedWithoutHeader() throws Exception {
+    when(mockHttpClient.execute(any(HttpGet.class))).thenReturn(mockResponse);
+    when(mockResponse.getStatusLine()).thenReturn(mockStatusLine);
+    when(mockStatusLine.getStatusCode()).thenReturn(HttpStatus.SC_UNAUTHORIZED);
+    when(mockResponse.containsHeader(HttpHeaders.WWW_AUTHENTICATE)).thenReturn(false);
+
+    UnAuthorizedException exception =
+        assertThrows(
+            UnAuthorizedException.class,
+            () -> AuthChallenge.discover(mockHttpClient, REGISTRY_ENDPOINT));
+
+    assertTrue(exception.getMessage().contains("401 without WWW-Authenticate"));
+  }
+
+  @Test
+  void testDiscover_ThrowsException_WhenUnexpectedStatus() throws Exception {
+    when(mockHttpClient.execute(any(HttpGet.class))).thenReturn(mockResponse);
+    when(mockResponse.getStatusLine()).thenReturn(mockStatusLine);
+    when(mockStatusLine.getStatusCode()).thenReturn(HttpStatus.SC_INTERNAL_SERVER_ERROR);
+
+    UnknownException exception =
+        assertThrows(
+            UnknownException.class,
+            () -> AuthChallenge.discover(mockHttpClient, REGISTRY_ENDPOINT));
+
+    assertTrue(exception.getMessage().contains("Unexpected response"));
+    assertTrue(exception.getMessage().contains("500"));
+  }
+
+  @Test
+  void testDiscover_ThrowsUnknownException_WhenRequestFailsWithIOException() throws Exception {
+    doThrow(new IOException("Connection refused")).when(mockHttpClient).execute(any(HttpGet.class));
+
+    UnknownException exception =
+        assertThrows(
+            UnknownException.class,
+            () -> AuthChallenge.discover(mockHttpClient, REGISTRY_ENDPOINT));
+
+    assertTrue(exception.getMessage().contains("Registry ping request failed"));
+    assertNotNull(exception.getCause());
+    assertEquals(IOException.class, exception.getCause().getClass());
+  }
+
+  @Test
+  void testAnonymous_ReturnsAnonymousChallenge() {
+    AuthChallenge challenge = AuthChallenge.anonymous();
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.ANONYMOUS, challenge.getScheme());
+    assertNull(challenge.getRealm());
+    assertNull(challenge.getService());
+    assertNull(challenge.getScope());
+    assertFalse(challenge.isBearer());
+  }
+
+  @Test
+  void testParse_BearerChallenge_WithAllParams() {
+    String header =
+        "Bearer"
+            + " realm=\"https://auth.example.com/token\",service=\"registry.example.com\",scope=\"repository:test:pull\"";
+
+    AuthChallenge challenge = AuthChallenge.parse(header);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.BEARER, challenge.getScheme());
+    assertEquals("https://auth.example.com/token", challenge.getRealm());
+    assertEquals("registry.example.com", challenge.getService());
+    assertEquals("repository:test:pull", challenge.getScope());
+    assertTrue(challenge.isBearer());
+  }
+
+  @Test
+  void testParse_BasicChallenge() {
+    String header = "Basic realm=\"Registry Realm\"";
+
+    AuthChallenge challenge = AuthChallenge.parse(header);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.BASIC, challenge.getScheme());
+    assertEquals("Registry Realm", challenge.getRealm());
+    assertNull(challenge.getService());
+    assertNull(challenge.getScope());
+    assertFalse(challenge.isBearer());
+  }
+
+  @Test
+  void testParse_CaseInsensitiveScheme() {
+    // "bearer" (lowercase) should be parsed to AuthScheme.BEARER via fromString()
+    String header = "bearer realm=\"https://auth.example.com/token\"";
+
+    AuthChallenge challenge = AuthChallenge.parse(header);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.BEARER, challenge.getScheme());
+    assertTrue(challenge.isBearer());
+  }
+
+  @ParameterizedTest
+  @NullAndEmptySource
+  @ValueSource(strings = {"   ", "\t", "\n"})
+  void testParse_ThrowsException_WhenHeaderIsBlank(String header) {
+    assertThrows(UnknownException.class, () -> AuthChallenge.parse(header));
+  }
+
+  @Test
+  void testParse_ThrowsException_WhenUnsupportedScheme() {
+    String header = "Digest realm=\"test\"";
+
+    InvalidArgumentException exception =
+        assertThrows(InvalidArgumentException.class, () -> AuthChallenge.parse(header));
+
+    assertTrue(exception.getMessage().contains("Unsupported authentication scheme"));
+  }
+
+  @Test
+  void testParse_HandlesEmptyParams() {
+    String header = "Bearer";
+
+    AuthChallenge challenge = AuthChallenge.parse(header);
+
+    assertNotNull(challenge);
+    assertEquals(AuthScheme.BEARER, challenge.getScheme());
+    assertNull(challenge.getRealm());
+    assertNull(challenge.getService());
+    assertNull(challenge.getScope());
+  }
+}
