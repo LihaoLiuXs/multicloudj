@@ -240,4 +240,34 @@ public class StsClientTest {
       }
     }
   }
+
+  @Test
+  public void testWithProxyEndpointDelegatesToProviderBuilder() {
+    AbstractSts mockProvider = mock(AbstractSts.class);
+    AbstractSts.Builder mockBuilder = mock(AbstractSts.Builder.class);
+    when(mockProvider.getProviderId()).thenReturn("mockProviderId");
+    when(mockProvider.builder()).thenReturn(mockBuilder);
+
+    ServiceLoader serviceLoader = mock(ServiceLoader.class);
+    Iterator<? extends AbstractSts> providerIterator = List.of(mockProvider).iterator();
+    when(serviceLoader.iterator()).thenReturn(providerIterator);
+
+    URI proxy = URI.create("http://publicproxy.example.net:8443");
+
+    try (MockedStatic<ServiceLoader> serviceLoaderStatic =
+        Mockito.mockStatic(ServiceLoader.class)) {
+      serviceLoaderStatic
+          .when(() -> ServiceLoader.load(AbstractSts.class))
+          .thenReturn(serviceLoader);
+
+      StsClient.StsBuilder builder = StsClient.builder("mockProviderId");
+      StsClient.StsBuilder returned = builder.withProxyEndpoint(proxy);
+
+      // Public client builder is fluent and stores the URI locally...
+      assertEquals(builder, returned);
+      assertEquals(proxy, builder.proxyEndpoint);
+      // ...and delegates to the underlying provider builder so each provider sees it.
+      Mockito.verify(mockBuilder).withProxyEndpoint(proxy);
+    }
+  }
 }

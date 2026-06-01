@@ -169,6 +169,7 @@ public class StsClient {
   public static class StsBuilder {
     protected String region;
     protected URI endpoint;
+    protected URI proxyEndpoint;
     protected AbstractSts sts;
     protected AbstractSts.Builder<?, ?> stsBuilder;
 
@@ -202,6 +203,26 @@ public class StsClient {
     public StsBuilder withEndpoint(URI endpoint) {
       this.endpoint = endpoint;
       this.stsBuilder.withEndpoint(endpoint);
+      return this;
+    }
+
+    /**
+     * Sets an HTTP CONNECT proxy that the provider's outbound requests should be routed through.
+     * Useful when the runtime requires egress to substrate APIs to traverse a corporate forward
+     * proxy (for example, GCP Falcon cells routing {@code *.googleapis.com} through Public Proxy).
+     * The URI must include scheme, host, and port (for example
+     * {@code http://publicproxy.example.net:8443}).
+     *
+     * <p>Provider support for this option is best effort. The GCP provider routes all four STS
+     * operations through the configured proxy. Other providers may not yet honor this setting;
+     * see provider class Javadoc.
+     *
+     * @param proxyEndpoint The proxy endpoint to set.
+     * @return This StsBuilder instance.
+     */
+    public StsBuilder withProxyEndpoint(URI proxyEndpoint) {
+      this.proxyEndpoint = proxyEndpoint;
+      this.stsBuilder.withProxyEndpoint(proxyEndpoint);
       return this;
     }
 

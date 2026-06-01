@@ -4,6 +4,7 @@ import com.google.api.client.http.ByteArrayContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpTransport;
+import com.google.api.client.http.apache.v2.ApacheHttpTransport;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.GenericJson;
 import com.google.api.client.json.JsonFactory;
@@ -40,11 +41,25 @@ import com.salesforce.multicloudj.sts.model.GetAccessTokenRequest;
 import com.salesforce.multicloudj.sts.model.GetCallerIdentityRequest;
 import com.salesforce.multicloudj.sts.model.StsCredentials;
 import java.io.IOException;
+import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.commons.lang3.StringUtils;
 
+/**
+ * GCP implementation of {@link AbstractSts}. All four operations ({@code assumeRole},
+ * {@code assumeRoleWithWebIdentity}, {@code getCallerIdentity}, {@code getAccessToken}) honor a
+ * proxy configured via {@link AbstractSts.Builder#withProxyEndpoint(URI)} on the public
+ * {@code StsClient.builder("gcp")} path. When a proxy is configured, the implementation routes
+ * outbound calls — including credential refresh against {@code oauth2.googleapis.com}, ID-token
+ * minting against {@code iamcredentials.googleapis.com}, the OIDC token-exchange POST against
+ * {@code sts.googleapis.com}, and impersonation refresh — through the supplied HTTP CONNECT proxy.
+ *
+ * <p>Application Default Credentials' GCE metadata-server probe is unaffected and continues to
+ * resolve locally, which matches the typical Falcon-cell deployment where {@code *.googleapis.com}
+ * must egress through Public Proxy but {@code metadata.google.internal} stays intra-cell.
+ */
 @AutoService(AbstractSts.class)
 public class GcpSts extends AbstractSts {
   private static final String STS_ENDPOINT = "https://sts.googleapis.com/v1/token";
@@ -55,11 +70,13 @@ public class GcpSts extends AbstractSts {
 
   public GcpSts(Builder builder) {
     super(builder);
+    this.httpTransportFactory = httpTransportFactoryFromBuilder(builder);
   }
 
   public GcpSts(Builder builder, GoogleCredentials credentials) {
     super(builder);
     this.googleCredentials = credentials;
+    this.httpTransportFactory = httpTransportFactoryFromBuilder(builder);
   }
 
   public GcpSts(Builder builder, HttpTransportFactory httpTransportFactory) {
@@ -76,6 +93,24 @@ public class GcpSts extends AbstractSts {
 
   public GcpSts() {
     super(new Builder());
+  }
+
+  /**
+   * Builds an {@link HttpTransportFactory} that routes traffic through the proxy declared on the
+   * builder via {@link Builder#withProxyEndpoint(URI)}. Returns {@code null} when no proxy is
+   * configured so callers fall back to the default {@link NetHttpTransport}.
+   */
+  private static HttpTransportFactory httpTransportFactoryFromBuilder(Builder builder) {
+    URI proxy = builder.getProxyEndpoint();
+    if (proxy == null) {
+      return null;
+    }
+    org.apache.http.HttpHost proxyHost =
+        new org.apache.http.HttpHost(proxy.getHost(), proxy.getPort(), proxy.getScheme());
+    org.apache.http.client.HttpClient httpClient =
+        org.apache.http.impl.client.HttpClientBuilder.create().setProxy(proxyHost).build();
+    HttpTransport transport = new ApacheHttpTransport(httpClient);
+    return () -> transport;
   }
 
   /**
@@ -266,6 +301,11 @@ public class GcpSts extends AbstractSts {
   @Override
   protected CallerIdentity getCallerIdentityFromProvider(GetCallerIdentityRequest request) {
     try {
+      // ID-token minting (against iamcredentials.googleapis.com) is performed by the
+      // underlying IdTokenProvider, which inherits its HttpTransport from the source
+      // GoogleCredentials returned by getCredentials(). When a proxy is configured via
+      // withProxyEndpoint, getCredentials() loads ADC with the proxied transport, so the
+      // ID-token refresh below automatically egresses through the proxy.
       GoogleCredentials credentials = getCredentials();
       credentials.refreshIfExpired();
       IdTokenCredentials idTokenCredentials =
@@ -350,10 +390,23 @@ public class GcpSts extends AbstractSts {
       return googleCredentials;
     }
     try {
+      // GCE metadata-server probe must remain local — on Falcon cells the metadata server
+      // (169.254.169.254) is reachable directly while *.googleapis.com must egress through
+      // Public Proxy. ComputeEngineCredentials is therefore never wrapped with the proxy
+      // factory; only the subsequent token-refresh against oauth2.googleapis.com is. The
+      // GCE credentials class fetches its access token over the metadata server, which is
+      // intra-cell and does not need the proxy either.
       if (System.getenv("KUBERNETES_SERVICE_HOST") != null) {
         return ComputeEngineCredentials.create();
       }
-      GoogleCredentials adc = GoogleCredentials.getApplicationDefault();
+      // Application Default Credentials: when a proxy is configured, hand the configured
+      // HttpTransport to ADC so its OAuth2 refresh flow against oauth2.googleapis.com is
+      // routed through the proxy. Without this, getAccessToken/getCallerIdentity would
+      // bypass the proxy on credential refresh.
+      GoogleCredentials adc =
+          httpTransportFactory != null
+              ? GoogleCredentials.getApplicationDefault(httpTransportFactory)
+              : GoogleCredentials.getApplicationDefault();
       if (adc.createScopedRequired()) {
         adc = adc.createScoped(List.of(SCOPE));
       }

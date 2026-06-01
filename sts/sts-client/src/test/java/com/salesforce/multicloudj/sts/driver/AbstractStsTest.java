@@ -83,6 +83,27 @@ public class AbstractStsTest {
   }
 
   @Test
+  public void testWithProxyEndpointStoresUri() {
+    TestSts.Builder localBuilder = new TestSts.Builder();
+    URI proxy = URI.create("http://publicproxy.example.net:8443");
+
+    TestSts.Builder returned = localBuilder.withProxyEndpoint(proxy);
+
+    // Builder fluent return
+    assertEquals(localBuilder, returned);
+    // URI is stored verbatim
+    assertEquals(proxy, localBuilder.getProxyEndpoint());
+  }
+
+  @Test
+  public void testWithProxyEndpointDefaultsToNull() {
+    TestSts.Builder localBuilder = new TestSts.Builder();
+    org.junit.jupiter.api.Assertions.assertNull(
+        localBuilder.getProxyEndpoint(),
+        "proxyEndpoint should default to null when not set");
+  }
+
+  @Test
   public void testAssumeRole() {
     TestSts sts = builder.build();
     assertEquals("testProvider", sts.getProviderId());

@@ -1,5 +1,7 @@
 package com.salesforce.multicloudj.sts.gcp;
 
+import com.google.api.client.http.HttpTransport;
+import com.google.api.client.http.apache.v2.ApacheHttpTransport;
 import com.google.api.client.testing.http.MockHttpTransport;
 import com.google.api.client.testing.http.MockLowLevelHttpRequest;
 import com.google.api.client.testing.http.MockLowLevelHttpResponse;
@@ -29,7 +31,9 @@ import com.salesforce.multicloudj.sts.model.GetAccessTokenRequest;
 import com.salesforce.multicloudj.sts.model.GetCallerIdentityRequest;
 import com.salesforce.multicloudj.sts.model.StsCredentials;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.util.Collection;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Assertions;
@@ -651,6 +655,61 @@ public class GcpStsTest {
     } catch (IllegalArgumentException e) {
       Assertions.assertNotNull(e, "mock credentials should throw for downscoped credentials");
     }
+  }
+
+  @Test
+  public void testWithProxyEndpointBuildsApacheTransportFactory() throws Exception {
+    URI proxy = URI.create("http://publicproxy.example.net:8443");
+
+    // Public path: StsClient.builder("gcp").withProxyEndpoint(...).build() exercises the
+    // no-arg GcpSts(Builder) constructor, which is what real callers hit.
+    GcpSts.Builder builder = new GcpSts().builder();
+    builder.withProxyEndpoint(proxy);
+    GcpSts sts = builder.build();
+
+    HttpTransportFactory factory = readField(sts, "httpTransportFactory");
+    Assertions.assertNotNull(
+        factory,
+        "GcpSts should build an HttpTransportFactory when a proxy endpoint is configured");
+
+    HttpTransport transport = factory.create();
+    Assertions.assertTrue(
+        transport instanceof ApacheHttpTransport,
+        "Proxy-bearing transport must be ApacheHttpTransport (NetHttpTransport cannot route "
+            + "through an arbitrary HTTP CONNECT proxy without static system properties); "
+            + "got " + transport.getClass().getName());
+  }
+
+  @Test
+  public void testNoProxyEndpointLeavesFactoryNull() throws Exception {
+    // No proxy configured -> getCredentials() falls back to the default
+    // GoogleCredentials.getApplicationDefault() path with no transport override.
+    GcpSts sts = new GcpSts().builder().build();
+
+    HttpTransportFactory factory = readField(sts, "httpTransportFactory");
+    Assertions.assertNull(
+        factory,
+        "GcpSts should not synthesize an HttpTransportFactory when no proxy is configured");
+  }
+
+  @Test
+  public void testWithProxyEndpointAlsoAppliesWhenCredentialsSupplied() throws Exception {
+    URI proxy = URI.create("http://publicproxy.example.net:8443");
+
+    // Mirror: build(GoogleCredentials) is the overload tests use; it must still respect a
+    // proxy declared on the builder.
+    GcpSts sts = new GcpSts().builder().withProxyEndpoint(proxy).build(mockGoogleCredentials);
+
+    HttpTransportFactory factory = readField(sts, "httpTransportFactory");
+    Assertions.assertNotNull(factory);
+    Assertions.assertTrue(factory.create() instanceof ApacheHttpTransport);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T> T readField(Object target, String name) throws Exception {
+    Field f = GcpSts.class.getDeclaredField(name);
+    f.setAccessible(true);
+    return (T) f.get(target);
   }
 
   private void assertExceptionMapping(

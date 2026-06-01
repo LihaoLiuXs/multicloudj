@@ -139,6 +139,7 @@ public abstract class AbstractSts implements Provider {
       implements Provider.Builder {
     @Getter protected String region;
     @Getter protected URI endpoint;
+    @Getter protected URI proxyEndpoint;
     protected String providerId;
 
     /**
@@ -160,6 +161,21 @@ public abstract class AbstractSts implements Provider {
      */
     public T withEndpoint(URI endpoint) {
       this.endpoint = endpoint;
+      return self();
+    }
+
+    /**
+     * Sets an HTTP CONNECT proxy that all outbound requests issued by the provider implementation
+     * should be routed through. The URI must include scheme, host, and port (for example
+     * {@code http://publicproxy.example.net:8443}). Provider support for this option is best
+     * effort: not every provider implementation routes every internal call through the proxy.
+     * Consult the provider's class-level Javadoc for details.
+     *
+     * @param proxyEndpoint The proxy endpoint to set.
+     * @return This Builder instance.
+     */
+    public T withProxyEndpoint(URI proxyEndpoint) {
+      this.proxyEndpoint = proxyEndpoint;
       return self();
     }
 
